@@ -1,116 +1,58 @@
-# PHP Docker image for Yii 2.0 Framework runtime
-# ==============================================
+FROM php:fpm-alpine
 
-ARG PHP_BASE_IMAGE_VERSION
-FROM php:7.4
+MAINTAINER Evgeny Orekhov <orehov@web-canape.com>
 
-# Install system packages for PHP extensions recommended for Yii 2.0 Framework
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get -y install \
-        gnupg2 && \
-    apt-key update && \
-    apt-get update && \
-    apt-get -y install \
-            g++ \
-            git \
-            curl \
-            imagemagick \
-            libcurl3-dev \
-            libicu-dev \
-            libfreetype6-dev \
-            libjpeg-dev \
-            libjpeg62-turbo-dev \
-            libonig-dev \
-            libmagickwand-dev \
-            libpq-dev \
-            libpng-dev \
-            libxml2-dev \
-            libzip-dev \
-            zlib1g-dev \
-            default-mysql-client \
-            openssh-client \
-            nano \
-            unzip \
-            libcurl4-openssl-dev \
-            libssl-dev \
-        --no-install-recommends && \
-        apt-get clean && \
-        rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+################################################################################
+# Composer                                                                     #
+################################################################################
 
-# Install PHP extensions required for Yii 2.0 Framework
-ARG X_LEGACY_GD_LIB=0
-RUN if [ $X_LEGACY_GD_LIB = 1 ]; then \
-        docker-php-ext-configure gd \
-                --with-freetype-dir=/usr/include/ \
-                --with-png-dir=/usr/include/ \
-                --with-jpeg-dir=/usr/include/; \
-    else \
-        docker-php-ext-configure gd \
-                --with-freetype=/usr/include/ \
-                --with-jpeg=/usr/include/; \
-    fi && \
-    docker-php-ext-configure bcmath && \
-    docker-php-ext-install \
-        soap \
-        zip \
-        curl \
-        bcmath \
-        exif \
-        gd \
-        iconv \
-        intl \
-        mbstring \
-        opcache \
-        pdo_mysql \
-        pdo_pgsql
+# Packages
+RUN apk add --no-cache --virtual .composer-dependencies \
+    unzip \
+    git \
+    openssh-client
 
-# Install PECL extensions
-# see http://stackoverflow.com/a/8154466/291573) for usage of `printf`
-RUN printf "\n" | pecl install \
-        imagick \
-        xdebug \
-        mongodb && \
-    docker-php-ext-enable \
-        imagick \
-        mongodb
+# Register the COMPOSER_HOME environment variable
+ENV COMPOSER_HOME /composer
 
-# Environment settings
-ENV COMPOSER_ALLOW_SUPERUSER=1 \
-    PHP_USER_ID=33 \
-    PHP_ENABLE_XDEBUG=0 \
-    PATH=/app:/app/vendor/bin:/root/.composer/vendor/bin:$PATH \
-    TERM=linux \
-    VERSION_PRESTISSIMO_PLUGIN=^0.3.10
+# Add global binary directory to PATH and make sure to re-export it
+ENV PATH /composer/vendor/bin:$PATH
 
-# Add configuration files
-COPY image-files/ /
+# Allow Composer to be run as root
+ENV COMPOSER_ALLOW_SUPERUSER 1
 
-# Add GITHUB_API_TOKEN support for composer
-RUN chmod 700 \
-        /usr/local/bin/docker-php-entrypoint \
-        /usr/local/bin/composer
+# Setup the Composer installer
+RUN curl -o /tmp/composer-setup.php https://getcomposer.org/installer \
+    && curl -o /tmp/composer-setup.sig https://composer.github.io/installer.sig \
+    && php -r "if (hash('SHA384', file_get_contents('/tmp/composer-setup.php')) !== trim(file_get_contents('/tmp/composer-setup.sig'))) { unlink('/tmp/composer-setup.php'); echo 'Invalid installer' . PHP_EOL; exit(1); }"
 
-# Install composer
-RUN curl -sS https://getcomposer.org/installer | php -- \
-        --filename=composer.phar \
-        --install-dir=/usr/local/bin && \
-    composer clear-cache
+ENV COMPOSER_VERSION 1.7.2
 
-# Install composer plugins
-RUN composer global require --optimize-autoloader \
-        "hirak/prestissimo:${VERSION_PRESTISSIMO_PLUGIN}" && \
-    composer global dumpautoload --optimize && \
-    composer clear-cache
+# Install Composer
+RUN php /tmp/composer-setup.php \
+    --no-ansi \
+    --install-dir=/usr/local/bin \
+    --filename=composer \
+    --version=${COMPOSER_VERSION} \
+    && rm -rf /tmp/composer-setup.php
 
-# Enable mod_rewrite for images with apache
-RUN if command -v a2enmod >/dev/null 2>&1; then \
-        a2enmod rewrite headers \
-    ;fi
+################################################################################
+# SSH                                                                          #
+################################################################################
 
-# Install Yii framework bash autocompletion
-RUN curl -L https://raw.githubusercontent.com/yiisoft/yii2/master/contrib/completion/bash/yii \
-        -o /etc/bash_completion.d/yii
+RUN mkdir /root/.ssh/ \
+    && ssh-keyscan github.com gitlab.com bitbucket.org \
+    >> /root/.ssh/known_hosts
 
-# Application environment
-WORKDIR /var/www
+################################################################################
+# Health check                                                                 #
+################################################################################
+
+RUN apk add --no-cache fcgi
+
+HEALTHCHECK --interval=10s --timeout=3s \
+    CMD \
+    SCRIPT_NAME=/ping \
+    SCRIPT_FILENAME=/ping \
+    REQUEST_METHOD=GET \
+    cgi-fcgi -bind -connect 127.0.0.1:9000 || exit 1
